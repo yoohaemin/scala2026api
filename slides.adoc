@@ -1,0 +1,1125 @@
+= Automating API Busywork in Scala
+Haemin Yoo · Scalar 2026
+:revealjs_theme: white
+:revealjs_hash: true
+:revealjs_slide_number: true
+:revealjs_showNotes: false
+:source-highlighter: highlight.js
+:icons: font
+
+// ──────────────────────────────────────────
+// Act 0 — Opening
+// ──────────────────────────────────────────
+
+// Slide 1 — T (title)
+
+[.notes]
+--
+Hi all, welcome to my talk, **Automating API Busywork in Scala**.
+
+I've had a lot of fun listening to the latest developments in Scala land.
+
+This talk uses something that is absolutely not latest. One was available since 3.0, one was available since 2.13.
+
+Old stuff. But we use them in production. Likely you haven't heard about it.
+--
+
+// Slide 2 — S (statement)
+== Rediscovering Schema as Data
+
+[.notes]
+--
+So one layer deeper, I want to talk about this.
+
+I gave a talk last year where I see FP as the paradigm of reification and composition patterns.
+
+This is in the same spirit. A lot of API schema information are implicit. I want to reify, treat them as data, and that makes some things easier to reason about.
+--
+
+// ──────────────────────────────────────────
+// Act 1 — Two Layers of an API
+// ──────────────────────────────────────────
+
+// Slide 3 — Q
+== The Dragon Rental API
+
+[%step]
+[source]
+----
+function rentDragon:
+
+(Dragon Id) -> (Rental)
+----
+
+[.notes]
+--
+Look at this API. It's a dragon rental API. You input a dragon ID, and you get a rental object out of it.
+--
+
+// Slide 4 — Q (question)
+== What information is associated with an API?
+
+[%step]
+* Dragon id?
+* Rental object?
+
+[%step]
+Also: Schema
+
+[.notes]
+--
+So let's talk about interfaces.
+
+All interfaces — whether it's a REST API, a GraphQL API, a Scala function, or even a physical kiosk for ordering food — when you have an interface, what information is associated with it?
+
+The dragon ID in the request, like smaug? The rental object in the response?
+
+Those are right, but they are at the domain level.
+
+Schema is also the related information.
+
+Two types of schema information in this talk.
+--
+
+// Slide 5 — S
+== Part 1
+
+[.notes]
+--
+* first schema element that I find annoying to maintain.
+--
+
+// ──────────────────────────────────────────
+// Act 1a — Error Schemas
+// ──────────────────────────────────────────
+
+// Slide 6 — S (statement)
+== List of possible errors
+
+[%step]
+1. Understand what errors can happen
+2. Document it somewhere
+
+[%step]
+Can we automate?
+
+[.notes]
+--
+Which errors can this call raise?
+
+What do teams usually do to maintain this? They maintain this list manually by hand.
+--
+
+// Slide 7 — S (statement)
+== Source of data
+
+[%step]
+Code!
+
+[.notes]
+--
+First: where does this come from?
+
+The list of possible error enums is in the code. You read the code, you figure it out, and then you communicate it somehow to the API consumer.
+
+Applicable to REST, GraphQL, GRPC, ...
+--
+
+// Slide 8 — C (code)
+== Goal
+
+[%step]
+[source,scala]
+----
+// Given...
+case class DragonNotFound(id: DragonId)
+case class DragonVacationing(id: DragonId)
+----
+
+[%step]
+[source,scala]
+----
+// Business logic
+for {
+  _ <- checkDragonExists(id)
+  _ <- checkDragonAvailable(id)
+} yield Rental(...)
+
+// Get a handle of the error as value or type somehow
+----
+
+[.notes]
+--
+Now consider the following errors: `DragonNotFound`, `DragonVacationing`.
+
+If you have a code path `rentDragon` that can raise both, then the code for `rentDragon` actually has enough information to generate that list.
+--
+
+// Slide 9 — Q (question)
+== How do we build this automatically?
+
+[.notes]
+--
+You can do it with your eyeballs — that's the proof it can be done.
+
+But how can we do that automatically, with our favorite tool — the compiler?
+
+--
+
+// Slide 10 — C (code)
+== Composing with flatMap
+
+[%step]
+[source,scala]
+----
+// Works with Either, ...
+def checkDragonExists(id: DragonId)
+  : IO[DragonNotFound, Unit] = ???
+
+def checkDragonAvailable(id: DragonId)
+  : IO[DragonVacationing, Unit] = ???
+----
+
+[%step]
+[source,scala]
+----
+// Part of rentDragon
+val check = for {
+  _ <- checkDragonExists(id)
+  _ <- checkDragonAvailable(id)
+} yield ()
+----
+
+[%step]
+[source,scala]
+----
+IO[DragonNotFound | DragonVacationing, Unit]
+----
+
+[%step]
+Done?
+
+[.notes]
+--
+Now, as Scala 3 users, we have a new feature compared to Scala 2: union types.
+
+Let's say you have two operations: `checkDragonExists` and `checkDragonAvailable`, both returning `IO[..., Unit]`.
+
+If you compose them with `flatMap`, you get that exact union type.
+
+The advantage of this is that it is always precise, and it requires no manual maintenance.
+--
+
+// Slide 11 — Q (question)
+== Problems
+
+[.notes]
+--
+But if you follow this pattern, you also run into a problem.
+
+What is it?
+--
+
+// Slide 12 — C (code)
+== Vanilla Case Classes
+
+[source,scala]
+----
+case class DragonNotFound(id: DragonId)
+case class DragonVacationing(id: DragonId)
+
+// Not a Throwable. No stack traces.
+----
+
+[.notes]
+--
+You aren't extending `Throwable`.
+
+You don't get stack traces. You don't get to use the machinery built around `Throwable` for error handling, like interop with Java code.
+--
+
+// Slide 13 — C (code)
+== Adding Stack Traces Manually
+
+[%step]
+[source,scala]
+----
+case class DragonNotFound(id: DragonId) {
+  val stackTrace = ??? // 😩
+}
+
+case class DragonVacationing(id: DragonId) {
+  val stackTrace = ??? // Again!!
+}
+----
+
+[.notes]
+--
+So how do you get stack traces?
+
+Simple: add the code that captures stacktraces into the constructor.
+Repeat that in every case class you want to treat as an error.
+
+But you don't want to repeat. How do you abstract over repeated code in the constructor?
+
+That's right, you extend something. An abstract class or a trait.
+--
+
+// Slide 14 — C (code)
+== Widening
+
+[%step]
+[source,scala]
+----
+sealed trait Rejection extends RuntimeException
+
+case class DragonNotFound(id: DragonId)
+  extends Rejection
+case class DragonVacationing(id: DragonId)
+  extends Rejection
+----
+
+[%step]
+[source,scala]
+----
+val check = for {
+  _ <- checkDragonExists(id)
+  _ <- checkDragonAvailable(id)
+} yield ()
+----
+
+[%step]
+[source,scala]
+----
+IO[Rejection, Unit]
+----
+
+[.notes]
+--
+But then you get this problem: the type inference becomes the supertype — in this case, `Rejection` — not `A | B`.
+
+So you're thrown into a dilemma.
+
+Either you keep vanilla case classes, or you accept that union type accumulation doesn't work.
+--
+
+// Slide 15 — S (statement)
+== Quiz
+
+[.notes]
+--
+Who knows what's the solution? Raise of hand. Who knows where I am going?
+--
+
+// Slide 16 — C (code)
+== `transparent trait`
+
+[source,scala]
+----
+transparent trait Rejection extends RuntimeException
+
+case class DragonNotFound(id: DragonId)
+  extends Rejection
+case class DragonVacationing(id: DragonId)
+  extends Rejection
+----
+
+[%step]
+[source,scala]
+----
+val result = for {
+  _ <- checkDragonExists(id)
+  _ <- checkDragonAvailable(id)
+} yield ()
+----
+
+[%step]
+[source,scala]
+----
+IO[DragonNotFound | DragonVacationing, Unit]
+----
+
+[.notes]
+--
+That's right: transparent traits.
+
+Now you get the best of both worlds. Only in Scala 3.
+
+Stack traces preserved. Union inference preserved.
+--
+
+// Slide 17 — C (code)
+== Harvesting
+
+[%step]
+[source,scala]
+----
+def rentDragon(id: Dragon.Id) = for {
+  // Returns IO
+----
+
+[%step]
+[source,scala]
+----
+case class Result[E, A](value: ? => IO[E, A]) {
+  type Out = E | A
+}
+----
+
+[%step]
+[source,scala]
+----
+val r = Result(rentDragon)
+type RentDragonResult = r.Out
+----
+
+[.notes]
+--
+You can now refer to the error type as the union type by putting it in a box:
+
+Now you can refer to `Out` as a path-dependent type, harvest it, and feed it to schema derivation in, say, Caliban.
+--
+
+// Slide 18 — S (statement)
+== Always up to date
+
+[%step]
+[source,scala]
+----
+given Schema[Any, r.Out] = Schema.unionType[r.Out]
+----
+
+[%step]
+[source,graphql]
+----
+union RentDragonResult =
+  DragonNotFound | DragonVacationing | Rental
+
+type Query {
+  rentDragon(id: String!): RentDragonResult!
+}
+----
+
+[%step]
+Auto-generated!
+
+[.notes]
+--
+And you will get an up-to-date GraphQL error schema straight from the source.
+
+And even if you're not using Caliban or GraphQL, it still works.
+--
+
+// Slide 19 — C (code)
+== Exhaustive Pattern Match
+
+[source,scala]
+----
+result.value.either.map {
+  // Keep it up to date with
+  // -Wconf:name=PatternMatchExhaustivity:e
+  //       ,name=MatchCaseUnreachable:e
+  case Left(e: DragonNotFound)     => ???
+  case Left(e: DragonVacationing)  => ???
+  case Right(rental)               => ???
+}
+----
+
+[.notes]
+--
+Even if you don't directly harvest the errors to generate a GraphQL schema,
+
+you can project the effect to `Either` at the boundary and pattern match on the errors to create error responses.
+
+By failing on non-exhaustive matches and unreachable cases, you get notified when the set of possible errors changes.
+--
+
+// Slide 20 — D (diagram)
+== Only errors?
+
+[%step]
+1. Which events can this emit?
+2. Which state does this touch?
+3. What authorization does this require?
+
+[.notes]
+--
+The idea probably doesn't stop at error handling.
+Anything that's defined in code, you can infer it.
+--
+
+
+// Slide 21 — D (diagram)
+== Error sets, as data
+
+[.notes]
+--
+So that was one schema-level concern that I made as data.
+
+Now we get speed of iteration.
+
+We can check the generated schema into Git and have it reviewed by frontend teams or internally to catch breaking changes.
+
+It helps with iteration speed.
+--
+
+// ──────────────────────────────────────────
+// Transition
+// ──────────────────────────────────────────
+
+// Slide 22 — T (title/transition)
+== Part 2
+
+[.notes]
+--
+Now onto my second point.
+
+In part 1, the schema level data was the error set, communicated from the backend code to the audience.
+
+In part 2, the schema level data is a different data we want to communicate in the other direction.
+
+Same move: make it explicit, then propagate it with the right mechanism.
+--
+
+
+// ──────────────────────────────────────────
+// Act 2 — Selection Trees
+// ──────────────────────────────────────────
+
+// Slide 23 — Q (question)
+== `rentDragon(dragonId)`
+
+[%step]
+What should it return?
+
+[.notes]
+--
+If you have a `rentDragon(dragonId)` API exposed over the network, conceptually, what should it return?
+
+This is a trick question.
+--
+
+// Slide 24 — S (statement)
+== We can't know!
+
+[%step]
+The client needs to communicate the selection tree to the server
+
+[.notes]
+--
+The answer is: we can't know.
+
+Or rather, the question is underspecified to provide an answer.
+
+What we want to return is orthogonal to the operation itself. It's a UX concern.
+
+What the client needs dictates what we want to return from that operation.
+
+So what is "what the client needs"? What is the data?
+
+It's the traversal of the domain graph in the form of trees, starting from a node. In that case, a Rental.
+--
+
+// Slide 25 — D (diagram)
+== Domain Relations
+
+++++
+<div class="r-stack">
+  <div class="fragment fade-out" data-fragment-index="1">
+    <div class="mermaid">
+    graph LR
+      Rental ~~~ Dragon
+      Dragon ~~~ Breed
+      Dragon ~~~ Schedule
+      style Rental fill:#fff,stroke:#333
+      style Dragon fill:#fff,stroke:#ddd,color:#bbb
+      style Breed fill:#fff,stroke:#ddd,color:#bbb
+      style Schedule fill:#fff,stroke:#ddd,color:#bbb
+    </div>
+  </div>
+  <div class="fragment fade-in-then-out" data-fragment-index="1">
+    <div class="mermaid">
+    graph LR
+      Rental --> Dragon
+      Dragon ~~~ Breed
+      Dragon ~~~ Schedule
+      style Rental fill:#fff,stroke:#333
+      style Dragon fill:#fff,stroke:#333
+      style Breed fill:#fff,stroke:#ddd,color:#bbb
+      style Schedule fill:#fff,stroke:#ddd,color:#bbb
+      linkStyle 0 stroke:#e74c3c,stroke-width:3px
+    </div>
+  </div>
+  <div class="fragment fade-in-then-out" data-fragment-index="2">
+    <div class="mermaid">
+    graph LR
+      Rental --> Dragon
+      Dragon --> Breed
+      Dragon ~~~ Schedule
+      style Rental fill:#fff,stroke:#333
+      style Dragon fill:#fff,stroke:#333
+      style Breed fill:#fff,stroke:#333
+      style Schedule fill:#fff,stroke:#ddd,color:#bbb
+      linkStyle 0 stroke:#e74c3c,stroke-width:3px
+      linkStyle 1 stroke:#e74c3c,stroke-width:3px
+    </div>
+  </div>
+  <div class="fragment fade-in" data-fragment-index="3">
+    <div class="mermaid">
+    graph LR
+      Rental --> Dragon
+      Dragon --> Breed
+      Dragon --> Schedule
+      style Rental fill:#fff,stroke:#333
+      style Dragon fill:#fff,stroke:#333
+      style Breed fill:#fff,stroke:#333
+      style Schedule fill:#fff,stroke:#333
+      linkStyle 0 stroke:#e74c3c,stroke-width:3px
+      linkStyle 1 stroke:#e74c3c,stroke-width:3px
+      linkStyle 2 stroke:#e74c3c,stroke-width:3px
+    </div>
+  </div>
+</div>
+++++
+
+[.notes]
+--
+You created a rental, so you can start with `Rental`.
+
+Then you might want to get the associated `Dragon`.
+
+Then you might want to get the associated `Breed`.
+
+What is that association?
+
+It's a relation.
+--
+
+// ──────────────────────────────────────────
+// Act 2a — The Backend Side
+// ──────────────────────────────────────────
+
+// Slide 26 — S (statement)
+== REST & SQL
+
+[.notes]
+--
+So far this has been abstract.
+
+Now let's pin it to the default architecture most teams know.
+
+Frontend calls a REST endpoint.
+
+The backend then talks to SQL, or a cache, or another service, or whatever else is behind it.
+--
+
+// Slide 27 — D (diagram)
+== What does backend do?
+
+++++
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg" style="max-width:750px;margin:0 auto;display:block;">
+  <!-- Phone -->
+  <rect x="20" y="80" width="60" height="110" rx="8" fill="none" stroke="#333" stroke-width="2"/>
+  <rect x="28" y="95" width="44" height="70" fill="#eee" stroke="#999" stroke-width="1"/>
+  <circle cx="50" cy="178" r="4" fill="none" stroke="#333" stroke-width="1.5"/>
+  <text x="50" y="215" text-anchor="middle" font-size="13" fill="#333">Client</text>
+
+  <!-- Left tree (FE-facing) -->
+  <g transform="translate(160, 100)">
+    <rect x="0" y="30" width="55" height="22" rx="4" fill="#fff" stroke="#e74c3c" stroke-width="2"/>
+    <text x="27" y="45" text-anchor="middle" font-size="10" fill="#333">Rental</text>
+    <line x1="55" y1="41" x2="80" y2="20" stroke="#e74c3c" stroke-width="1.5"/>
+    <rect x="80" y="8" width="55" height="22" rx="4" fill="#fff" stroke="#e74c3c" stroke-width="2"/>
+    <text x="107" y="23" text-anchor="middle" font-size="10" fill="#333">Dragon</text>
+    <line x1="55" y1="41" x2="80" y2="62" stroke="#e74c3c" stroke-width="1.5"/>
+    <rect x="80" y="50" width="55" height="22" rx="4" fill="#fff" stroke="#ccc" stroke-width="1.5" stroke-dasharray="4"/>
+    <text x="107" y="65" text-anchor="middle" font-size="10" fill="#999">Breed</text>
+    <line x1="135" y1="19" x2="160" y2="0" stroke="#e74c3c" stroke-width="1.5"/>
+    <rect x="160" y="-12" width="55" height="22" rx="4" fill="#fff" stroke="#ccc" stroke-width="1.5" stroke-dasharray="4"/>
+    <text x="187" y="3" text-anchor="middle" font-size="10" fill="#999">Sched</text>
+  </g>
+
+  <!-- Backend App box -->
+  <rect x="330" y="60" width="140" height="160" rx="10" fill="#f8f8f8" stroke="#333" stroke-width="2.5"/>
+  <text x="400" y="90" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Backend</text>
+  <text x="400" y="108" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">App</text>
+
+  <!-- Right tree (DB-facing) -->
+  <g transform="translate(500, 100)">
+    <rect x="0" y="30" width="55" height="22" rx="4" fill="#fff" stroke="#2980b9" stroke-width="2"/>
+    <text x="27" y="45" text-anchor="middle" font-size="10" fill="#333">Rental</text>
+    <line x1="55" y1="41" x2="80" y2="20" stroke="#2980b9" stroke-width="1.5"/>
+    <rect x="80" y="8" width="55" height="22" rx="4" fill="#fff" stroke="#2980b9" stroke-width="2"/>
+    <text x="107" y="23" text-anchor="middle" font-size="10" fill="#333">Dragon</text>
+    <line x1="55" y1="41" x2="80" y2="62" stroke="#2980b9" stroke-width="1.5"/>
+    <rect x="80" y="50" width="55" height="22" rx="4" fill="#fff" stroke="#ccc" stroke-width="1.5" stroke-dasharray="4"/>
+    <text x="107" y="65" text-anchor="middle" font-size="10" fill="#999">Breed</text>
+    <line x1="135" y1="19" x2="160" y2="0" stroke="#2980b9" stroke-width="1.5"/>
+    <rect x="160" y="-12" width="55" height="22" rx="4" fill="#fff" stroke="#ccc" stroke-width="1.5" stroke-dasharray="4"/>
+    <text x="187" y="3" text-anchor="middle" font-size="10" fill="#999">Sched</text>
+  </g>
+
+  <!-- DB icon -->
+  <ellipse cx="740" cy="120" rx="30" ry="12" fill="#eee" stroke="#333" stroke-width="2"/>
+  <rect x="710" y="120" width="60" height="40" fill="#eee" stroke="none"/>
+  <line x1="710" y1="120" x2="710" y2="160" stroke="#333" stroke-width="2"/>
+  <line x1="770" y1="120" x2="770" y2="160" stroke="#333" stroke-width="2"/>
+  <ellipse cx="740" cy="160" rx="30" ry="12" fill="#eee" stroke="#333" stroke-width="2"/>
+  <text x="740" y="198" text-anchor="middle" font-size="13" fill="#333">DB</text>
+
+  <!-- Arrows -->
+  <line x1="85" y1="140" x2="155" y2="140" stroke="#999" stroke-width="1.5" marker-end="url(#arrowR)"/>
+  <line x1="470" y1="140" x2="500" y2="140" stroke="#999" stroke-width="1.5" marker-end="url(#arrowR)"/>
+  <line x1="660" y1="140" x2="705" y2="140" stroke="#999" stroke-width="1.5" marker-end="url(#arrowR)"/>
+
+  <defs>
+    <marker id="arrowR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/>
+    </marker>
+  </defs>
+</svg>
+++++
+
+[.notes]
+--
+So what does the backend app actually do?
+
+It takes the shape implicitly requested by the frontend, and turns it into some mix of SQL, cache lookups, RPC calls, or stitching code.
+
+That is where the interesting problem lives.
+
+There are really two selection trees here.
+
+One on the frontend-facing side of the backend: what shape does the REST endpoint return?
+
+And one on the datasource-facing side of the backend: what shape do we fetch from below?
+
+Same intent, duplicated around the backend.
+--
+
+// Slide 28 — S (statement)
+== Organizational reasons
+
+[%step]
+Trees in one place!
+
+[.notes]
+--
+And this default was not stupid.
+
+It was a good default.
+
+The endpoint shape lived in the backend app.
+
+The SQL or stitching shape lived in the backend app.
+
+So from the organization's point of view, there was one place to change.
+--
+
+// Slide 29 — S (statement)
+== Selection-tree churn
+
+[.notes]
+--
+This architecture works well when shapes are stable.
+
+But in a fast-paced environment, they are not stable.
+
+Frontend wants slightly different response shapes.
+
+Product changes screens.
+
+Design moves fields around.
+
+And then the bottleneck is not raw runtime performance.
+
+The bottleneck is engineering time spent updating those hardcoded selection trees.
+--
+
+// Slide 30 — S (statement)
+== FE-side selection trees are mostly solved
+
+[%step]
+GraphQL
+
+[.notes]
+--
+If the frontend is the bottleneck, there is already a widely known answer.
+
+GraphQL.
+
+It lets the client send the selection tree in-band instead of opening tickets for new shapes.
+
+Solved enough.
+--
+
+
+// Slide 31 — S (statement)
+== Backend selection trees are not
+
+[%step]
+* Hard to abstract query languages!
+* Multiple sources!
+
+[%step]
+Local resolution
+
+[.notes]
+--
+But representing selection trees inside the backend is definitely not a solved problem.
+
+Why? Not through a lack of effort. We already had an excellent talk to abstract over SQL even today.
+
+So much effort gone into abstracting over query languages. In my opinion, it's far from being conquered.
+
+But it gets unwieldy once the shape becomes dynamic, or the query gets ugly.
+
+If the data lives in multiple places, it just doesn't work.
+
+My theory: there is no single mainstream declarative abstraction that spans all the kinds of datasources a backend talks to.
+--
+
+// Slide 32 — S (statement)
+== Local resolution's first problem: N+1
+
+[%step]
+* Bad default: singular fetches
+* Think: singular as specialized case of plural
+* Compose singular & plural fetches in a single call
+
+[.notes]
+--
+If we can't abstract selection trees, why don't we turn to local resolution?
+
+First problem: N plus one.
+
+And N plus one is not just a bug.
+
+Repository modules tend to expose the minimum thing that solves the current task.
+
+Then application code composes singular fetches in a loop, and you get N plus one almost by default.
+--
+
+// Slide 33 — C (code)
+== N+1 is solved
+
+[%step]
+[source,scala]
+----
+def getScheduleView(schedules: List[Schedule.Id])
+  : Task[List[(Schedule, Dragon)]] =
+----
+
+[%step]
+[source,scala]
+----
+  // Efficient!
+  (for {
+    schedules <- getSchedules(dragon.id)
+    dragons   <- ZQuery.foreachBatched(
+                         schedules.map(s => getDragon(s.dragonId))
+                       )
+                       .map(d => d.id -> d).toMap
+  } yield ScheduleView(
+    schedules.map(s => s -> dragons(s.dragonId))
+  )).run
+----
+
+[%step]
+Where is the tree?
+
+[.notes]
+--
+Facebook ran into that problem hard enough to build Haxl.
+
+Later, the same idea became widely known as DataLoader in JS land.
+
+This problem was universal — in Scala, we have multiple ports, including ZQuery in ZIO and Fetch in cats-effect.
+
+Haxl solved the execution side.
+
+Batching, deduplication, reasonable performance.
+
+But look at this code. Do you see the selection tree?
+--
+
+// Slide 34 — S (statement)
+== Local resolution's second problem: imperative code
+
+[.notes]
+--
+Haxl did not solve the representation problem.
+
+You still write the imperative program first.
+
+Each step models a call to a datasource.
+
+Each subroutine is built ad hoc.
+
+The selection tree is still implicit in the control flow.
+
+So even if execution is okay, ergonomics are still bad.
+--
+
+// Slide 35 — S (statement)
+== represent the selection tree itself?
+
+[.notes]
+--
+What do we actually want to represent?
+
+Not batching logic.
+
+Not imperative control flow.
+
+We want to represent the selection tree itself.
+
+So just express the selection tree as data, and translate it into the imperative program.
+--
+
+// Slide 36 — S (statement)
+== decrel
+
+[.notes]
+--
+That is exactly what **decrel** does.
+--
+
+// Slide 37 — S (statement)
+== Edges as values, composed into trees
+
+[.notes]
+--
+It makes the edges of your domain relation graph into simple values, and lets you compose them into tree shapes.
+
+Now the selection tree is explicit.
+
+You can express it directly as values, rather than indirectly through imperative stitching code, or through a SQL string.
+--
+
+// Slide 38 — C (code)
+== decrel expressions
+
+[source,scala]
+----
+val schedules: List[Schedules]
+----
+
+[%step]
+[source,scala]
+----
+def getScheduleView(schedules: List[Schedule.Id])
+  : TaskQuery[List[(Schedule, Dragon)]] =
+----
+
+[%step]
+[source,scala]
+----
+  (Schedule.fetch <>: Schedule.dragon)
+    .startingFrom(schedules)
+----
+
+[%step]
+[source,scala]
+----
+  // List[(Schedule, Dragon, Breed)]
+  (Schedule.fetch <>: Schedule.dragon <>: Dragon.breed)
+    .startingFrom(schedules)
+----
+
+
+[.notes]
+--
+Now this `.startingFrom` compiles your tree into the imperative `map` and `flatMap` program.
+
+And if you run it with the right monadic type — say `ZQuery` or `Fetch` — you get "good enough" performance with manual stitching and a declarative API.
+
+You saw the API.
+
+It's basically: get the dragon from the rental by following an edge, then get the breed and the vacation schedule of the dragon in parallel by following two more edges.
+--
+
+// Slide 39 — C (code)
+== it's not magic
+
+[%step]
+[source,scala]
+----
+given scheduleDragonProof: Proof.Single[
+  Schedule.dragon.type,
+  Schedule,
+  Throwable,
+  Dragon
+] =
+  implementSingleDatasource(Rental.dragon) {
+    (schedules: Chunk[Schedule]) =>
+      // Implement yourself (efficiently)
+      // Given a Chunk[Schedule],
+      //   return a Chunk[(Schedule, Dragon)]
+  }
+----
+
+[%step]
+[source,scala]
+----
+val schedule: Schedule = ???
+----
+
+[%step]
+[source,scala]
+----
+Schedule.dragon.startingFrom(schedule)
+
+// (3.8+)
+schedule.expand(Schedule.dragon)
+----
+
+// Slide 40 — S (statement)
+== Stitching as the default, SQL as optimization
+
+[.notes]
+--
+Now I'm absolutely not claiming that you should never write joins anymore.
+
+Joins are more likely to be faster than manual stitching with `ZQuery` or `Fetch`.
+
+What I am claiming, though, is that once local resolution becomes ergonomic, it can be the sane default.
+
+That is the change decrel is aiming for.
+
+If fast UI iteration pushes you toward GraphQL, decrel can sit underneath it too. GraphQL resolvers need to solve the same backend problem.
+
+And if you are on a REST backend and the real bottleneck is selection-set churn inside the backend app, decrel gives you a much nicer local-resolution default than one SQL string per endpoint.
+--
+
+// Slide 41 — C (code)
+== Declarative is not enough
+
+[%step]
+[source,sql]
+----
+-- Before
+SELECT r.id, d.id, b.name, s.starts_at, s.ends_at
+FROM rental r
+JOIN dragon d ON d.id = r.dragon_id
+JOIN breed b ON b.id = d.breed_id
+LEFT JOIN schedule s ON s.dragon_id = d.id
+WHERE r.id = ?;
+----
+
+[%step]
+[source,sql]
+----
+-- After
+SELECT r.id, d.id, b.name
+FROM rental r
+JOIN dragon d ON d.id = r.dragon_id
+JOIN breed b ON b.id = d.breed_id
+WHERE r.id = ?;
+----
+
+[%step]
+See the difference?
+
+[.notes]
+--
+Suppose you get a ticket to remove the schedule from the response.
+
+On the SQL side, that often means editing the select list, the joins, and the row decoding logic that sits next to the query.
+
+Even in this toy version, the diff spreads across multiple lines.
+--
+
+// Slide 42 — C (code)
+== In decrel
+
+[%step]
+[source,scala]
+----
+// Before
+(Rental.dragon <>: (Dragon.breed & Dragon.schedule))
+  .startingFrom(rental)
+----
+
+[%step]
+[source,scala]
+----
+// After
+(Rental.dragon <>: Dragon.breed)
+  .startingFrom(rental)
+----
+
+[.notes]
+--
+In decrel, the diff is the tree diff.
+
+You remove one edge from the tree, and the resulting program follows that new shape.
+
+Back to our theme.
+
+The information we want to convey was the selection tree.
+--
+
+// ──────────────────────────────────────────
+// Closing
+// ──────────────────────────────────────────
+
+// Slide 43 — T (title/transition)
+== Closing
+
+// Slide 44 — S (statement)
+== What did we learn?
+
+[%step]
+1. transparent traits (do try this at home!)
+2. selection trees
+
+[%step]
+Reify implicit ideas into values
+
+[.notes]
+--
+So what did you learn?
+
+1. reifying error sets with transparent traits
+2. reifying selection trees with decrel
+--
+
+// Slide 45 — S (statement)
+== Only possible in Scala
+
+[%step]
+* Deriving error sets
+1. Configurable type inference (`transparent`)
+
+[%step]
+* Decrel
+1. Right-associative operators
+2. Term inference (implicit search)
+3. Module-scoped typeclass instances (lexical scope orphaned instances)
+4. Production-ready
+
+[.notes]
+--
+And I mean this quite literally: decrel is possible in this exact form because Scala has all the things I need.
+
+Right-associative operators, so the tree shape reads naturally in the code.
+
+Term inference, so you don't rely on a runtime registry of data fetching implementations.
+
+Module-scoped typeclass instances, so one relation can have multiple implementations with the same typeclass.
+
+Last but not least, it must be practical for mainstream backend application development.
+
+Other languages have parts of these features, so decrel can be replicated in spirit.
+
+But if you want this exact shape and this level of ergonomics, Scala is the only one I know.
+--
+
+
+// Slide 46 — S (statement)
+== Thank you!
+
+Demo code available in
+
+https://github.com/yoohaemin/scalar2026api

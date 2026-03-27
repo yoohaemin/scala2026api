@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "puppeteer-core": "^24.40.0"
+  },
+  "devDependencies": {
+    "@asciidoctor/reveal.js": "^5.2.0"
+  }
+}

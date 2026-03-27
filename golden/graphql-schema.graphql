@@ -1,0 +1,30 @@
+schema {
+  query: Query
+}
+
+union RentDragonResult = DBError | DragonNotFound | DragonVacationing | Rental
+
+type DBError {
+  underlying: String!
+}
+
+type DragonNotFound {
+  id: Id!
+}
+
+type DragonVacationing {
+  id: Id!
+}
+
+type Id {
+  value: String!
+}
+
+type Query {
+  rentDragon(id: String!): RentDragonResult!
+}
+
+type Rental {
+  id: Id!
+  dragonId: Id!
+}
